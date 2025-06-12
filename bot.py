@@ -206,6 +206,7 @@ async def autocomplete_shop_items(ctx: discord.AutocompleteContext):
 # --- USER COMMANDS ---
 @bot.slash_command(name="balance", description=f"Examine your or another Incarnation's {CURRENCY_NAME} balance.")
 async def balance(ctx: discord.ApplicationContext, user: discord.Option(discord.Member, "The Incarnation to view.", required=False)):
+    # This command is fast enough, so no deferral is needed.
     target_user = user or ctx.author
     user_balance = await db.get_balance(target_user.id)
     
@@ -219,13 +220,14 @@ async def balance(ctx: discord.ApplicationContext, user: discord.Option(discord.
 
 @bot.slash_command(name="pay", description=f"Share your story by sending {CURRENCY_NAME}s to another.")
 async def pay(ctx: discord.ApplicationContext, recipient: discord.Option(discord.Member, "The Incarnation to receive your story."), amount: discord.Option(int, "The amount of Coin to send.")):
+    await ctx.defer() # [FIXED] Defer response as a precaution.
     sender = ctx.author
     if amount <= 0:
-        return await ctx.respond("A story's value must be positive.", ephemeral=True)
+        return await ctx.followup.send("A story's value must be positive.", ephemeral=True) # [FIXED]
     if recipient.bot:
-        return await ctx.respond("Dokkaebi do not trade in mortal currency.", ephemeral=True)
+        return await ctx.followup.send("Dokkaebi do not trade in mortal currency.", ephemeral=True) # [FIXED]
     if recipient.id == sender.id:
-        return await ctx.respond("You cannot write a story for yourself.", ephemeral=True)
+        return await ctx.followup.send("You cannot write a story for yourself.", ephemeral=True) # [FIXED]
 
     if await db.transfer_coins(sender.id, recipient.id, amount):
         embed = EmbedFactory.create(
@@ -233,7 +235,7 @@ async def pay(ctx: discord.ApplicationContext, recipient: discord.Option(discord
             description=f"A new story has been woven. You sent **{amount:,} {CURRENCY_SYMBOL}** to {recipient.mention}.",
             color=discord.Color.green()
         )
-        await ctx.respond(embed=embed)
+        await ctx.followup.send(embed=embed) # [FIXED]
         
         log_embed = EmbedFactory.create(
             title="Akashic Record: Coin Transfer",
@@ -252,10 +254,12 @@ async def pay(ctx: discord.ApplicationContext, recipient: discord.Option(discord
             description=f"Your Fable is insufficient. You only possess **{balance:,} {CURRENCY_SYMBOL}**.",
             color=discord.Color.red()
         )
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.followup.send(embed=embed, ephemeral=True) # [FIXED]
 
 @bot.slash_command(name="leaderboard", description="View the Ranking Scenario for the wealthiest Incarnations.")
 async def leaderboard(ctx: discord.ApplicationContext):
+    await ctx.defer()  # [FIXED] Defer the response immediately.
+    
     top_users = await db.get_leaderboard(limit=10)
     embed = EmbedFactory.create(
         title="🏆「The Throne of the Absolute」🏆",
@@ -263,11 +267,12 @@ async def leaderboard(ctx: discord.ApplicationContext):
     )
     if not top_users:
         embed.description = "The ranking is currently empty. No great Fables have been told."
-        return await ctx.respond(embed=embed)
+        return await ctx.followup.send(embed=embed) # [FIXED] Use followup.send
     
     desc = []
     for rank, record in enumerate(top_users, 1):
         try:
+            # This is the slow part that caused the original error.
             user = bot.get_user(record['user_id']) or await bot.fetch_user(record['user_id'])
             user_display = user.mention
         except discord.NotFound:
@@ -277,7 +282,7 @@ async def leaderboard(ctx: discord.ApplicationContext):
         desc.append(f"{emoji} {user_display} — **{record['balance']:,} {CURRENCY_SYMBOL}**")
         
     embed.description = "\n".join(desc)
-    await ctx.respond(embed=embed)
+    await ctx.followup.send(embed=embed) # [FIXED] Use followup.send
 
 # --- CONSTELLATION COMMANDS ---
 constellation_cmds = SlashCommandGroup("constellation", "Commands for managing the Star Stream.", guild_ids=[MAIN_GUILD_ID])
@@ -288,10 +293,11 @@ constellation_cmds = SlashCommandGroup("constellation", "Commands for managing t
 )
 @commands.cooldown(1, 60, commands.BucketType.user)
 async def generate(ctx: discord.ApplicationContext, amount: discord.Option(int, "The amount of the Revelation."), recipient: discord.Option(discord.Member, "The Incarnation to be blessed.")):
+    await ctx.defer() # [FIXED] Defer response.
     if not is_constellation(ctx):
-        return await ctx.respond("The Star Stream does not recognize your Modifier.", ephemeral=True)
+        return await ctx.followup.send("The Star Stream does not recognize your Modifier.", ephemeral=True) # [FIXED]
     if amount <= 0:
-        return await ctx.respond("A Revelation must have substance.", ephemeral=True)
+        return await ctx.followup.send("A Revelation must have substance.", ephemeral=True) # [FIXED]
         
     await db.add_coins(recipient.id, amount)
     
@@ -300,7 +306,7 @@ async def generate(ctx: discord.ApplicationContext, amount: discord.Option(int, 
         description=f"The Constellation {ctx.author.mention} has bestowed a Revelation upon {recipient.mention}, granting them **{amount:,} {CURRENCY_SYMBOL}**.",
         color=discord.Color.from_rgb(0, 255, 255)
     )
-    await ctx.respond(embed=embed)
+    await ctx.followup.send(embed=embed) # [FIXED]
 
     log_embed = EmbedFactory.create(
         title="Akashic Record: Coin Generation",
@@ -316,6 +322,7 @@ async def generate(ctx: discord.ApplicationContext, amount: discord.Option(int, 
 @generate.error
 async def generate_error(ctx: discord.ApplicationContext, error: discord.DiscordException):
     if isinstance(error, commands.CommandOnCooldown):
+        # Respond is okay here because it's a separate error handler and will be fast
         await ctx.respond(f"Your Stigma is on cooldown. Try again in {error.retry_after:.2f} seconds.", ephemeral=True)
 
 @constellation_cmds.command(
@@ -323,10 +330,11 @@ async def generate_error(ctx: discord.ApplicationContext, error: discord.Discord
     description=f"Judge an Incarnation and confiscate their {CURRENCY_NAME}s."
 )
 async def confiscate(ctx: discord.ApplicationContext, amount: discord.Option(int, "The amount of Coin to confiscate."), recipient: discord.Option(discord.Member, "The Incarnation to be judged.")):
+    await ctx.defer() # [FIXED] Defer response.
     if not is_constellation(ctx):
-        return await ctx.respond("The Star Stream does not recognize your Modifier.", ephemeral=True)
+        return await ctx.followup.send("The Star Stream does not recognize your Modifier.", ephemeral=True) # [FIXED]
     if amount <= 0:
-        return await ctx.respond("A Judgment must have substance. The amount must be positive.", ephemeral=True)
+        return await ctx.followup.send("A Judgment must have substance. The amount must be positive.", ephemeral=True) # [FIXED]
 
     current_balance = await db.get_balance(recipient.id)
     
@@ -339,7 +347,7 @@ async def confiscate(ctx: discord.ApplicationContext, amount: discord.Option(int
         description=f"The Constellation {ctx.author.mention} has passed Judgment upon {recipient.mention}, confiscating **{amount_to_remove:,} {CURRENCY_SYMBOL}**.",
         color=discord.Color.dark_red()
     )
-    await ctx.respond(embed=embed)
+    await ctx.followup.send(embed=embed) # [FIXED]
 
     log_embed = EmbedFactory.create(
         title="Akashic Record: Coin Confiscation",
@@ -364,12 +372,13 @@ async def shop_add(ctx: discord.ApplicationContext,
                    reward_role: discord.Option(discord.Role, "The Stigma (Role) a user gets for buying this."),
                    one_time_buy: discord.Option(bool, "Is this a unique Artifact?"),
                    image_file: discord.Option(discord.Attachment, "Upload an image for the Artifact.", required=False)):
+    await ctx.defer() # [FIXED] Defer response.
     if not is_constellation(ctx):
-        return await ctx.respond("Only Constellations may stock the Dokkaebi Bag.", ephemeral=True)
+        return await ctx.followup.send("Only Constellations may stock the Dokkaebi Bag.", ephemeral=True) # [FIXED]
     if not ctx.guild:
-        return await ctx.respond("This Scenario can only be performed in a guild.", ephemeral=True)
+        return await ctx.followup.send("This Scenario can only be performed in a guild.", ephemeral=True) # [FIXED]
     if cost <= 0:
-        return await ctx.respond("Artifacts must have a positive cost.", ephemeral=True)
+        return await ctx.followup.send("Artifacts must have a positive cost.", ephemeral=True) # [FIXED]
 
     image_url = image_file.url if image_file else None
 
@@ -385,7 +394,7 @@ async def shop_add(ctx: discord.ApplicationContext,
             embed.add_field(name="Type", value="Hidden Piece (Unique)")
         if image_url:
             embed.set_thumbnail(url=image_url)
-        await ctx.respond(embed=embed)
+        await ctx.followup.send(embed=embed) # [FIXED]
         
         log_embed = EmbedFactory.create(
             title="Akashic Record: Artifact Added",
@@ -400,12 +409,14 @@ async def shop_add(ctx: discord.ApplicationContext,
         log_embed.add_field(name="Is Unique?", value=str(one_time_buy), inline=True)
         await send_log(log_embed)
     else:
-        await ctx.respond(f"An Artifact with the name '{name}' already exists in this channel.", ephemeral=True)
+        await ctx.followup.send(f"An Artifact with the name '{name}' already exists in this channel.", ephemeral=True) # [FIXED]
 
 @shop.command(name="view", description="Peer into the Dokkaebi Bag.")
 async def shop_view(ctx: discord.ApplicationContext):
+    await ctx.defer() # [FIXED] Defer the response immediately.
+    
     if not ctx.guild:
-        return await ctx.respond("The Dokkaebi Bag only opens within a guild.", ephemeral=True)
+        return await ctx.followup.send("The Dokkaebi Bag only opens within a guild.", ephemeral=True) # [FIXED]
     items = await db.get_all_shop_items(ctx.guild.id)
     embed = EmbedFactory.create(
         title=f"「{ctx.guild.name}'s Dokkaebi Bag」",
@@ -423,6 +434,7 @@ async def shop_view(ctx: discord.ApplicationContext):
             if item['is_one_time_buy']:
                 if item['purchased_by_user_id']:
                     try:
+                        # This is the slow part that caused the original error.
                         purchaser = bot.get_user(item['purchased_by_user_id']) or await bot.fetch_user(item['purchased_by_user_id'])
                         purchaser_mention = purchaser.mention
                     except discord.NotFound:
@@ -432,31 +444,34 @@ async def shop_view(ctx: discord.ApplicationContext):
                     item_line += "**Type:** ✨ Hidden Piece (Unique)\n"
             desc.append(item_line)
         embed.description = "\n".join(desc)
-    await ctx.respond(embed=embed)
+    await ctx.followup.send(embed=embed) # [FIXED]
 
 @shop.command(name="buy", description="Make a contract to buy an Artifact.")
 async def shop_buy(ctx: discord.ApplicationContext, name: discord.Option(str, "The name of the Artifact to buy.", autocomplete=autocomplete_shop_items)):
+    # [FIXED] Defer ephemerally, so the "thinking" message is private.
+    await ctx.defer(ephemeral=True)
+    
     if not ctx.guild:
-        return await ctx.respond("Contracts can only be made in a guild.", ephemeral=True)
+        return await ctx.followup.send("Contracts can only be made in a guild.", ephemeral=True) # [FIXED]
     item = await db.get_shop_item(ctx.guild.id, name)
     if not item:
-        return await ctx.respond(f"The Star Stream cannot find an Artifact named '{name}'.", ephemeral=True)
+        return await ctx.followup.send(f"The Star Stream cannot find an Artifact named '{name}'.", ephemeral=True) # [FIXED]
     if item['is_one_time_buy'] and item['purchased_by_user_id']:
-        return await ctx.respond("This Hidden Piece has already been claimed by another Incarnation.", ephemeral=True)
+        return await ctx.followup.send("This Hidden Piece has already been claimed by another Incarnation.", ephemeral=True) # [FIXED]
 
     user_balance = await db.get_balance(ctx.author.id)
     if user_balance < item['cost']:
-        return await ctx.respond(f"Your Fable is insufficient. You need **{item['cost']:,} {CURRENCY_SYMBOL}** but only have **{user_balance:,}**.", ephemeral=True)
+        return await ctx.followup.send(f"Your Fable is insufficient. You need **{item['cost']:,} {CURRENCY_SYMBOL}** but only have **{user_balance:,}**.", ephemeral=True) # [FIXED]
 
     role_to_grant = ctx.guild.get_role(item['role_id'])
     if not role_to_grant:
-        return await ctx.respond("Error: The promised Stigma has faded from this world.", ephemeral=True)
+        return await ctx.followup.send("Error: The promised Stigma has faded from this world.", ephemeral=True) # [FIXED]
     if role_to_grant in ctx.author.roles:
-        return await ctx.respond("You already possess this Stigma.", ephemeral=True)
+        return await ctx.followup.send("You already possess this Stigma.", ephemeral=True) # [FIXED]
     if not ctx.guild.me.guild_permissions.manage_roles:
-        return await ctx.respond("Bot Error: This Dokkaebi lacks the `Manage Roles` permission to grant Stigmas.", ephemeral=True)
+        return await ctx.followup.send("Bot Error: This Dokkaebi lacks the `Manage Roles` permission to grant Stigmas.", ephemeral=True) # [FIXED]
     if role_to_grant.position >= ctx.guild.me.top_role.position:
-        return await ctx.respond("Bot Error: This Dokkaebi cannot grant a Stigma that is higher than its own station.", ephemeral=True)
+        return await ctx.followup.send("Bot Error: This Dokkaebi cannot grant a Stigma that is higher than its own station.", ephemeral=True) # [FIXED]
 
     try:
         # Perform transaction
@@ -472,7 +487,9 @@ async def shop_buy(ctx: discord.ApplicationContext, name: discord.Option(str, "T
         )
         embed.add_field(name="Stigma Acquired", value=f"You have been granted the {role_to_grant.mention} Stigma!")
         if item['image_url']: embed.set_thumbnail(url=item['image_url'])
-        await ctx.respond(embed=embed)
+        # [FIXED] Send public success message. Since we deferred ephemerally, this is a new message.
+        await ctx.author.send(embed=embed)
+        await ctx.followup.send("Your contract has been fulfilled! I've sent the details to your DMs.", ephemeral=True)
 
         # --- Logging ---
         log_embed = EmbedFactory.create(
@@ -484,22 +501,22 @@ async def shop_buy(ctx: discord.ApplicationContext, name: discord.Option(str, "T
         log_embed.add_field(name="Artifact", value=item['name'], inline=True)
         log_embed.add_field(name="Cost", value=f"**{item['cost']:,} {CURRENCY_SYMBOL}**", inline=True)
         
-        # [MODIFIED] Send log to admin channel (and web cache)
         await send_log(log_embed)
-        # [NEW] Send log directly to Constellations
         await send_purchase_log_to_constellations(log_embed)
         
     except Exception as e:
         print(f"An error occurred during purchase, refunding user. Error: {e}")
-        await ctx.respond("A fatal error occurred in the Star Stream. The contract has been voided and your Coins returned.", ephemeral=True)
+        # [FIXED] Use followup.send for the error message.
+        await ctx.followup.send("A fatal error occurred in the Star Stream. The contract has been voided and your Coins returned.", ephemeral=True)
         await db.add_coins(ctx.author.id, item['cost']) # Refund on any failure
 
 @shop.command(name="remove", description="[CONSTELLATION] Remove an Artifact from the Dokkaebi Bag.")
 async def shop_remove(ctx: discord.ApplicationContext, name: discord.Option(str, "The name of the Artifact to remove.", autocomplete=autocomplete_shop_items)):
+    await ctx.defer() # [FIXED] Defer response.
     if not is_constellation(ctx):
-        return await ctx.respond("Only Constellations may alter the Dokkaebi Bag's contents.", ephemeral=True)
+        return await ctx.followup.send("Only Constellations may alter the Dokkaebi Bag's contents.", ephemeral=True) # [FIXED]
     if not ctx.guild:
-        return await ctx.respond("This Scenario can only be performed in a guild.", ephemeral=True)
+        return await ctx.followup.send("This Scenario can only be performed in a guild.", ephemeral=True) # [FIXED]
     
     if await db.remove_shop_item(ctx.guild.id, name):
         embed = EmbedFactory.create(
@@ -507,7 +524,7 @@ async def shop_remove(ctx: discord.ApplicationContext, name: discord.Option(str,
             description=f"Removed **{name}** from the Dokkaebi Bag.",
             color=discord.Color.orange()
         )
-        await ctx.respond(embed=embed)
+        await ctx.followup.send(embed=embed) # [FIXED]
         
         log_embed = EmbedFactory.create(
             title="Akashic Record: Artifact Removed",
@@ -519,7 +536,7 @@ async def shop_remove(ctx: discord.ApplicationContext, name: discord.Option(str,
         log_embed.add_field(name="Artifact Name", value=name, inline=False)
         await send_log(log_embed)
     else:
-        await ctx.respond(f"Could not find an Artifact named '{name}'.", ephemeral=True)
+        await ctx.followup.send(f"Could not find an Artifact named '{name}'.", ephemeral=True) # [FIXED]
 
 bot.add_application_command(shop)
 
