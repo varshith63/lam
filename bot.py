@@ -5,13 +5,20 @@ from discord.commands import SlashCommandGroup
 from discord.ext import commands
 from dotenv import load_dotenv
 
+# --- NEW IMPORTS for Web Logging ---
+import asyncio
+from aiohttp import web
+import collections
+from datetime import datetime
+import html # Used to escape characters for safe HTML display
+
 # Use the new asynchronous database module
 import database as db
 
 # --- CONFIGURATION ---
 load_dotenv()
 BOT_TOKEN = os.getenv('DISCORD_TOKEN')
-ADMIN_LOG_CHANNEL_ID = int(os.getenv('ADMIN_LOG_CHANNEL_ID')) if os.getenv('ADMIN_LOG_CHANNEL_ID') else None
+# ADMIN_LOG_CHANNEL_ID is no longer needed and has been removed.
 
 # Thematic role/user IDs for those who can influence the "Star Stream"
 CONSTELLATION_USER_IDS = [1374059561417441324, 1072508556907139133] # Formerly GENERATOR_USER_IDS
@@ -56,20 +63,83 @@ def is_constellation(ctx: discord.ApplicationContext) -> bool:
     if any(role_id in CONSTELLATION_ROLE_IDS for role_id in author_role_ids): return True
     return False
 
-# --- LOGGING ---
+# --- LOGGING & WEB SERVER (MODIFIED) ---
+# A deque is a memory-efficient list that discards old entries when full.
+LOG_CACHE = collections.deque(maxlen=200)
+
 async def send_log(embed: discord.Embed):
-    """Sends a log message to the Akashic Records (admin channel)."""
-    if not ADMIN_LOG_CHANNEL_ID:
-        print("Warning: ADMIN_LOG_CHANNEL_ID is not set. Skipping log.")
-        return
+    """Formats an embed and adds it to the web log cache instead of sending to Discord."""
+    # Create an HTML-formatted string from the embed's content
+    # html.escape() prevents issues if names or values contain HTML characters
+    ts = f"<span class='timestamp'>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>"
+    title = f"<span class='title'>{html.escape(str(embed.title))}</span>" if embed.title else ""
+    
+    parts = [f"{ts}<br>{title}"]
+
+    if embed.description:
+        parts.append(html.escape(str(embed.description)))
+    
+    for field in embed.fields:
+        field_name = f"<span class='field-name'>{html.escape(field.name)}:</span>"
+        field_value = html.escape(field.value)
+        parts.append(f"{field_name}<br>{field_value}")
+    
+    log_string = "<br>".join(parts)
+    LOG_CACHE.append(log_string)
+
+async def web_log_viewer(request):
+    """Handles web requests to view the logs, generating an HTML page."""
+    # Basic CSS for a clean, dark-themed log viewer
+    style = """
+    <style>
+        body { background-color: #2C2F33; color: #FFFFFF; font-family: 'Consolas', 'Courier New', monospace; padding: 20px; }
+        h1 { color: #7289DA; border-bottom: 2px solid #7289DA; padding-bottom: 10px; }
+        .log-entry { background-color: #23272A; border-left: 4px solid #7289DA; padding: 15px; margin-bottom: 12px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
+        .timestamp { color: #99AAB5; font-size: 0.9em; }
+        .title { color: #FFFFFF; font-weight: bold; font-size: 1.1em; }
+        .field-name { color: #43B581; font-weight: bold; }
+    </style>
+    <meta http-equiv="refresh" content="10">
+    """
+    
+    html_logs = []
+    # Iterate in reverse to show the newest logs at the top of the page
+    for log_item in reversed(LOG_CACHE):
+        html_logs.append(f"<div class='log-entry'>{log_item}</div>")
+
+    if not html_logs:
+        html_logs.append("<div class='log-entry'>No logs recorded yet. Perform an action with the bot to see logs here.</div>")
+
+    body = f"""
+    <html>
+        <head>
+            <title>Bot Live Logs</title>
+            {style}
+        </head>
+        <body>
+            <h1>Star Stream Akashic Records</h1>
+            <p>Showing the last {len(LOG_CACHE)} of up to {LOG_CACHE.maxlen} log entries. This page auto-refreshes every 10 seconds.</p>
+            {''.join(html_logs)}
+        </body>
+    </html>
+    """
+    return web.Response(text=body, content_type='text/html')
+
+async def start_web_server():
+    """Initializes and starts the aiohttp web server on port 5000."""
+    app = web.Application()
+    app.router.add_get('/', web_log_viewer)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Listen on all available network interfaces ('0.0.0.0') on port 5000
+    site = web.TCPSite(runner, '0.0.0.0', 5000)
     try:
-        channel = bot.get_channel(ADMIN_LOG_CHANNEL_ID) or await bot.fetch_channel(ADMIN_LOG_CHANNEL_ID)
-        if isinstance(channel, discord.TextChannel):
-            await channel.send(embed=embed)
-    except (discord.NotFound, discord.Forbidden) as e:
-        print(f"Error logging to channel {ADMIN_LOG_CHANNEL_ID}: {e}")
+        await site.start()
+        print(f"INFO: Log viewer server started. Access it at http://localhost:5000")
     except Exception as e:
-        print(f"An unexpected error occurred while sending a log: {e}")
+        print(f"ERROR: Could not start web server on port 5000. {e}")
+# --- END MODIFIED SECTION ---
+
 
 # --- BOT EVENTS ---
 @bot.event
@@ -79,8 +149,9 @@ async def on_ready():
     await db.init_db()
     await bot.sync_commands()
     print("All Scenarios (Commands) have been synced with Discord.")
-    if not ADMIN_LOG_CHANNEL_ID:
-        print("WARNING: ADMIN_LOG_CHANNEL_ID is not set. The Akashic Records will not be updated.")
+    # Start the web server as a background task so it doesn't block the bot
+    asyncio.create_task(start_web_server())
+
 
 # --- AUTOCOMPLETE ---
 async def autocomplete_shop_items(ctx: discord.AutocompleteContext):
@@ -410,6 +481,7 @@ bot.add_application_command(shop)
 
 # Run the bot
 if __name__ == "__main__":
+    # You will need to install aiohttp: pip install aiohttp
     if not BOT_TOKEN:
         print("Fatal Error: DISCORD_TOKEN not found in .env file. The Star Stream cannot connect.")
     else:
